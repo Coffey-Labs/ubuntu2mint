@@ -29,8 +29,8 @@ This project is intended for experienced Linux admins who understand APT, repo p
   - Mint desktop stack is pinned high to avoid mixed-version dependency breakage
 - Includes guardrails:
   - APT/dpkg lock detection
-  - best-effort dpkg/apt repair (`--no-auto-fix` to disable)
-  - simulation plan + safety checks (removal thresholds + critical package protection)
+  - best-effort dpkg/apt repair (always on; there is no flag to disable it)
+  - a pre-install APT simulation that aborts on critical-package removal or too many removals
   - disables third-party sources by default (with allowlist heuristics for common corp repos)
   - backup + rollback support
   - post-conversion validation report written into the backup directory
@@ -82,6 +82,12 @@ It creates a **temporary Mint keyring** by downloading and extracting the `linux
 
 > Plan mode is for decision support. It does not modify `/etc/apt` or install Mint repos onto your live system.
 
+Plan mode is **advisory** — it writes the simulation to a log for you to
+read and does not decide anything. The check that can actually stop a
+conversion is the gate inside `convert` (see [Safety model](#safety-model-important)),
+which runs its own simulation against your real APT configuration
+immediately before installing.
+
 ### 3) Run conversion
 
 ```bash
@@ -117,7 +123,7 @@ After conversion:
 ## Usage
 
 ```text
-sudo bash ubuntu-to-mint-convert-v3.sh doctor [--no-auto-fix]
+sudo bash ubuntu-to-mint-convert-v3.sh doctor
 sudo bash ubuntu-to-mint-convert-v3.sh plan [options]
 sudo bash ubuntu-to-mint-convert-v3.sh convert --i-accept-the-risk [options]
 sudo bash ubuntu-to-mint-convert-v3.sh rollback /root/ubuntu-to-mint-backup-YYYYMMDD-HHMMSS
@@ -152,27 +158,20 @@ sudo bash ubuntu-to-mint-convert-v3.sh rollback /root/ubuntu-to-mint-backup-YYYY
   Allow installation of recommended packages (default: off for safety).
 
 * `--max-removals N`
-  Abort if APT simulation removes more than N packages (default: `40`).
+  Abort if the pre-install simulation would remove more than N packages
+  (default: `40`). Critical packages abort regardless of this number.
+
+* `--preserve-snap`
+  Keep `snapd` and reinstall it after the Mint stack (this is the default).
 
 * `--yes`
-  Skip most interactive prompts.
-  (Does **not** bypass the `convert` disclaimer gate or `--i-accept-the-risk` requirement.)
+  Skip most interactive prompts, and allow overwriting an existing Mint
+  keyring that does not match the expected key.
+  (Does **not** bypass the `convert` disclaimer gate or `--i-accept-the-risk`.)
 
-* `--no-auto-fix`
-  Disable best-effort dpkg/apt repair pre-flight.
-
-### Keyring handling
-
-* `--overwrite-keyring`
-  If `/usr/share/keyrings/linuxmint-repo.gpg` exists, overwrite it.
-
-* `--recreate-keyring`
-  Back up and delete the keyring then recreate it.
-
-### Flavor / meta package conflict handling
-
-* `--no-purge-flavor`
-  Disable best-effort purging of conflicting Ubuntu flavor packages (e.g., `ubuntucinnamon-*`) that can cause session crashes/login loops.
+> There is no flag to disable the dpkg/apt repair pre-flight — it always
+> runs. Nor is there flavor-package purging; if a conflicting Ubuntu flavor
+> meta-package causes a login loop, remove it by hand.
 
 
 
@@ -182,12 +181,15 @@ Guardrails included to reduce “brick your system” outcomes:
 
 * Refuses to run unless on supported Ubuntu bases
 * Detects and blocks active APT/dpkg locks
-* Attempts to repair basic dpkg/apt broken states (unless `--no-auto-fix`)
+* Attempts to repair basic dpkg/apt broken states before doing anything else
 * Disables PPAs by default during conversion (unless `--keep-ppas`)
-* Runs an APT simulation and aborts if:
+* Runs an APT simulation **during `convert`, immediately before the real install**, and aborts if:
 
-  * APT wants to remove critical packages (e.g., `sudo`, `systemd`, `network-manager`, kernel meta packages)
-  * too many removals are detected (default threshold `40`)
+  * APT wants to remove a critical package — `sudo`, `systemd`, `libc6`, `apt`, `dpkg`, `network-manager`, `grub-*`, the kernel meta packages, `openssh-server`. There is no threshold at which removing these is acceptable, so any hit aborts outright.
+  * more than `--max-removals` packages would be removed (default `40`)
+  * APT cannot resolve the install at all
+
+  Nothing is installed when the gate trips. The full simulation is written to `/var/log/ubuntu-to-mint/simulate-YYYYMMDD-HHMMSS.txt`.
 * Creates a backup directory for rollback
 * Post-conversion validation writes a report into the backup directory (always created)
 
@@ -269,15 +271,27 @@ This version avoids keyservers by default. It prefers:
 * a locally installed `linuxmint-keyring` package, or
 * downloading the latest `linuxmint-keyring_*.deb` from the Mint mirror and extracting the keyring
 
-If your existing keyring is corrupt:
+The extracted key is checked against the expected Mint key ID
+(`A6616109451BBBF2`) and the run aborts if it is not present, so a
+substituted keyring fails rather than being trusted.
 
-* rerun with `--recreate-keyring` or `--overwrite-keyring`
+If your existing keyring does not match, the script stops and tells you to
+either re-run with `--yes` to overwrite it, or delete
+`/usr/share/keyrings/linuxmint-repo.gpg` by hand and re-run.
 
 ### Known dpkg overwrite conflict (mintupdate)
 
-Some environments will hit a file conflict between `mintupdate` and `software-properties-gtk`
-over an icon file. The script installs the Mint stack with a guarded dpkg overwrite option
-to prevent conversion from halting.
+Some environments hit a file conflict between `mintupdate` and
+`software-properties-gtk` over an icon file. The script applies a dpkg
+diversion for that file before installing, and retries the install once
+with remediation if it still fails.
+
+### Login loop after conversion
+
+A leftover Ubuntu flavor meta-package (`ubuntucinnamon-desktop` and
+friends) can fight the Mint session and produce a login loop. The script
+does **not** purge these — check for them from a TTY and remove them
+manually if the desktop will not start.
 
 ### Corporate VPN/EDR breaks
 

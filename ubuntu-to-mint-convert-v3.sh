@@ -169,7 +169,6 @@ Options:
   --keep-ppas                      Do not disable third-party sources (not recommended)
   --preserve-snap                  Keep snapd (default: enabled)
   --with-recommends                Allow recommended packages (default: off)
-  --no-install-recommends          Force --no-install-recommends (this is the default)
   --max-removals N                 Abort if the simulation removes more than N
                                    packages (default: ${MAX_REMOVALS})
   --yes                            Non-interactive / auto-confirm
