@@ -53,9 +53,15 @@ SCRIPT_VERSION="5.1"
 # Globals / Defaults
 # =========================
 LOG_DIR="/var/log/ubuntu-to-mint"
-mkdir -p "$LOG_DIR"
+# Deliberately NOT created here. This runs at file scope, before any
+# argument is parsed, so creating it meant `--help` and a mistyped flag
+# both died with "mkdir: Permission denied" instead of printing usage.
+# ensure_log_dir is called once a real command has been dispatched.
 LOG_FILE="${LOG_DIR}/ubuntu-to-mint-$(date +%Y%m%d-%H%M%S).log"
-exec > >(tee -a "$LOG_FILE") 2>&1
+# Logging is started by ensure_log_dir once a command has been dispatched,
+# for the same reason the directory is not created here: at file scope this
+# ran before argument parsing, so `--help` tried to tee into a directory
+# that does not exist and may not be creatable.
 
 # CLI defaults
 CMD=""
@@ -1158,9 +1164,20 @@ parse_args_any_order() {
 # =========================
 # Main
 # =========================
+ensure_log_dir() {
+  mkdir -p "$LOG_DIR" 2>/dev/null || \
+    die "Cannot create ${LOG_DIR}. Every command here needs root -- re-run with sudo."
+  # exec applies to the shell, not just this function, so everything from
+  # here on is both shown and logged.
+  exec > >(tee -a "$LOG_FILE") 2>&1
+}
+
 main() {
   parse_args_any_order "$@"
   [[ -n "$CMD" ]] || { usage; exit 1; }
+
+  # Past this point a command was named, so the log directory is wanted.
+  ensure_log_dir
 
   case "$CMD" in
     doctor) doctor ;;
