@@ -1,8 +1,19 @@
-# ubuntu2mint / ubuntu-to-mint-convert-v3
+# ubuntu2mint
 
 High-risk, best-effort **in-place conversion** script that keeps **Ubuntu as the base OS** while adding **Linux Mint repositories + Mint desktop/tooling** to approximate a Linux Mint system **without a full reinstall**.
 
 This project is intended for experienced Linux admins who understand APT, repo pinning, display managers, and rollback strategies.
+
+## Two scripts, in this order
+
+| | |
+|---|---|
+| **`ubuntu-to-mint-convert-v3.sh`** | Adds the Mint repositories and installs the Mint desktop stack alongside what is already there. Nothing is removed. |
+| **`ubuntu-desktop-prune.sh`** | *Afterwards*, once you have booted into a working Mint session, removes the Ubuntu GNOME desktop components left behind. |
+
+The order matters. Pruning the Ubuntu desktop before you have confirmed a
+working replacement session leaves you with neither — see
+[Pruning the Ubuntu desktop](#pruning-the-ubuntu-desktop).
 
 > 🟥 **UNSUPPORTED + PROBABLY DUMB (READ THIS FIRST)**  
 > There is **no guaranteed safe** way to convert Ubuntu to Linux Mint in-place and preserve *all* corporate software/agents.  
@@ -300,6 +311,74 @@ manually if the desktop will not start.
 * Validate kernel modules, certificate stores, and PAM stack
 
 
+
+## Pruning the Ubuntu desktop
+
+`ubuntu-desktop-prune.sh` is the second half of this, and it is destructive:
+it purges the Ubuntu GNOME desktop rather than adding anything.
+
+**Only run it after you have rebooted into a working Mint session.** It
+removes `gdm3`, `gnome-shell` and the Ubuntu session packages; if the
+replacement desktop does not actually work yet, you will be left without
+either one. `plan` first, always.
+
+### Commands
+
+```bash
+sudo bash ubuntu-desktop-prune.sh doctor     # environment checks
+sudo bash ubuntu-desktop-prune.sh plan       # simulate, change nothing
+sudo bash ubuntu-desktop-prune.sh prune --yes
+sudo bash ubuntu-desktop-prune.sh rollback /root/ubuntu-desktop-prune-backup-YYYYMMDD-HHMMSS
+```
+
+`prune` refuses to run without `--yes`. There is no interactive prompt —
+the flag *is* the confirmation.
+
+### Options
+
+* `--yes` — required for `prune`.
+* `--max-removals N` — abort if the simulation removes more than N packages
+  (default `75`). Critical packages abort regardless of this number.
+* `--with-recommends` — allow recommended packages (default: off).
+* `--skip-dm-fix` — do not try to make LightDM the default display manager
+  before pruning. **Rarely what you want**: the script sets LightDM up first
+  precisely because `gdm3` is about to be removed, and skipping that step is
+  how you end up with no display manager at all.
+
+### What it removes
+
+A fixed, conservative list — no wildcards — filtered to whatever is actually
+installed: `ubuntu-desktop`, `ubuntu-desktop-minimal`, `ubuntu-session`,
+`ubuntu-session-minimal`, `gdm3`, `gnome-shell` and its common/dock packages,
+the `yaru-theme-*` set, `ubuntu-wallpapers*`, `gnome-software`, `snap-store`.
+
+Toolkit and library packages that Cinnamon, MATE or Xfce may still depend on
+are deliberately left alone.
+
+### Safety gates
+
+The same shape as the converter's. Before purging, it simulates
+`apt-get purge --autoremove` and aborts if:
+
+* a critical package would be removed — `sudo`, `systemd`, `systemd-sysv`,
+  `network-manager`, `openssh-server`, or a kernel image. Unconditional.
+* more than `--max-removals` packages would go.
+* APT cannot resolve the purge.
+
+It also sets LightDM as the default display manager *before* removing
+`gdm3`, so the machine still has something to boot into.
+
+### Backup and rollback
+
+`prune` writes `/root/ubuntu-desktop-prune-backup-YYYYMMDD-HHMMSS/`
+containing `/etc/apt`, `/etc/lightdm`, `/etc/X11/default-display-manager`,
+the `display-manager.service` symlink, and inventories of installed
+packages, manual selections, holds and enabled services.
+
+`rollback` restores the APT and display-manager configuration from that
+directory. It does **not** reinstall the purged packages — the inventories
+are there so you can do that yourself, and a snapshot remains the only real
+undo.
 
 ## Security & compliance considerations
 
