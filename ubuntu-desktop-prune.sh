@@ -26,9 +26,12 @@ SCRIPT_VERSION="1.1"
 # Globals / Defaults
 # =========================
 LOG_DIR="/var/log/ubuntu-to-mint"
-mkdir -p "$LOG_DIR"
+# Not created here: this runs before any argument is parsed, so creating
+# it made `--help` and a mistyped flag fail with a raw mkdir error
+# instead of printing usage. ensure_log_dir does it once a command is
+# dispatched.
 LOG_FILE="${LOG_DIR}/ubuntu-desktop-prune-$(date +%Y%m%d-%H%M%S).log"
-exec > >(tee -a "$LOG_FILE") 2>&1
+# Logging starts in ensure_log_dir, for the same reason.
 
 CMD=""
 ASSUME_YES="no"
@@ -38,6 +41,7 @@ ROLLBACK_DIR=""
 
 # For safety gates
 MAX_REMOVALS_DEFAULT=75
+MAX_REMOVALS="$MAX_REMOVALS_DEFAULT"
 
 # =========================
 # Pretty output
@@ -94,6 +98,9 @@ Commands:
 
 Options:
   --yes              Non-interactive / proceed (required for prune)
+  --max-removals N   Abort if the simulation removes more than N packages
+                     (default: ${MAX_REMOVALS_DEFAULT}).
+                     Critical packages abort regardless of this number.
   --with-recommends  Allow recommends (default: off)
   --skip-dm-fix      Do not attempt to set LightDM as default before pruning
 EOF
@@ -362,8 +369,13 @@ apt_simulate_purge() {
   remv_count="$(grep -cE '^(Remv|Purg)[[:space:]]' "$sim" || true)"
   info "Simulation removal count: ${remv_count}"
 
-  if [[ "${ASSUME_YES}" != "yes" && "${remv_count}" -gt "${MAX_REMOVALS_DEFAULT}" ]]; then
-    die "Simulation wants to remove ${remv_count} packages (too many for 'gentle'). Re-run with --yes only if you reviewed $sim."
+  # Unconditional. This was previously skipped when --yes was set, which
+  # made it dead code in the only command that removes anything: prune
+  # refuses to run *without* --yes, so the threshold could never fire
+  # there. It fired only in plan, where nothing is at stake. Raising the
+  # limit is now an explicit, separate decision from not being prompted.
+  if [[ "${remv_count}" -gt "${MAX_REMOVALS}" ]]; then
+    die "Simulation wants to remove ${remv_count} packages (limit ${MAX_REMOVALS}). Review $sim, then re-run with --max-removals N if that is genuinely expected."
   fi
 
   ok "Simulation looks acceptable. Review: $sim"
@@ -482,6 +494,9 @@ parse_args_any_order() {
           fi
         fi
         ;;
+      --max-removals)
+        [[ "${2:-}" =~ ^[0-9]+$ ]] || die "--max-removals requires a number, got '${2:-}'"
+        MAX_REMOVALS="${2}"; shift 2;;
       --yes) ASSUME_YES="yes"; shift 1;;
       --with-recommends) WITH_RECOMMENDS="yes"; shift 1;;
       --skip-dm-fix) SKIP_DM_FIX="yes"; shift 1;;
@@ -491,9 +506,17 @@ parse_args_any_order() {
   done
 }
 
+ensure_log_dir() {
+  mkdir -p "$LOG_DIR" 2>/dev/null || \
+    die "Cannot create ${LOG_DIR}. Every command here needs root -- re-run with sudo."
+  exec > >(tee -a "$LOG_FILE") 2>&1
+}
+
 main() {
   parse_args_any_order "$@"
   [[ -n "$CMD" ]] || { usage; exit 1; }
+
+  ensure_log_dir
 
   case "$CMD" in
     doctor) doctor ;;
