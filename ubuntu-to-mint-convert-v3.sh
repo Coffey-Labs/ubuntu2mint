@@ -823,9 +823,17 @@ simulate_and_gate() {
     die "APT could not resolve the Mint stack (exit ${rc}). Nothing has been installed. Full output: ${sim_out}"
   fi
 
-  # `Remv <name> [version]` is what apt-get -s prints for each removal.
+  # apt-get -s prints `Remv <name> [version]` for removals and `Purg <name>`
+  # for purges -- both take the package away, so both count. It also emits
+  # the architecture qualifier in multiarch situations ("Remv sudo:amd64"),
+  # which has to be stripped or a critical package would slip past the exact
+  # match below. ubuntu-desktop-prune.sh already parses it this way.
   local -a removals=()
-  mapfile -t removals < <(awk '$1=="Remv"{print $2}' "$sim_out" | sort -u)
+  mapfile -t removals < <(
+    awk '/^(Remv|Purg)[[:space:]]+/{print $2}' "$sim_out" \
+      | sed -E 's/:[a-z0-9]+$//' \
+      | sort -u
+  )
   local count=${#removals[@]}
 
   # Critical packages first: no threshold makes these acceptable.
