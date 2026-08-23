@@ -77,6 +77,26 @@ UBUNTU_BASE=""
 DEFAULT_MINT=""
 ALLOWED_TARGETS=()
 
+# Safety gate for the APT simulation run before the real install.
+# Mixing Mint and Ubuntu repositories is exactly the situation where APT
+# resolves a conflict by proposing to remove a large slice of the system,
+# and the install runs with -y, so nothing would stop it.
+MAX_REMOVALS=40
+
+# Packages whose removal means the machine will not boot, will not have a
+# network, or will not let you log in to fix it. Any of these appearing in
+# the simulation aborts unconditionally -- there is no threshold at which
+# removing sudo or systemd is acceptable.
+CRITICAL_PACKAGES=(
+  apt dpkg libc6 bash coreutils
+  systemd systemd-sysv init dbus
+  sudo passwd login
+  network-manager netplan.io
+  grub-common grub-pc grub-efi-amd64 grub-efi-amd64-signed
+  linux-generic linux-image-generic linux-headers-generic
+  openssh-server
+)
+
 # Key handling
 MINT_KEYID="A6616109451BBBF2"
 SYSTEM_KEYRING="/usr/share/keyrings/linuxmint-repo.gpg"
@@ -133,7 +153,7 @@ ubuntu-to-mint-convert-v3.sh (v${SCRIPT_VERSION})
 Usage (command-first):
   sudo bash $0 doctor [options]
   sudo bash $0 plan [options]
-  sudo bash $0 convert --i-accept-theISK [options]
+  sudo bash $0 convert --i-accept-the-risk [options]
   sudo bash $0 rollback /root/ubuntu-to-mint-backup-YYYYMMDD-HHMMSS
 
 Usage (options-first ALSO supported):
@@ -149,6 +169,9 @@ Options:
   --keep-ppas                      Do not disable third-party sources (not recommended)
   --preserve-snap                  Keep snapd (default: enabled)
   --with-recommends                Allow recommended packages (default: off)
+  --no-install-recommends          Force --no-install-recommends (this is the default)
+  --max-removals N                 Abort if the simulation removes more than N
+                                   packages (default: ${MAX_REMOVALS})
   --yes                            Non-interactive / auto-confirm
   --i-accept-the-risk              Required for convert
 EOF
@@ -769,6 +792,83 @@ post_install_sanity() {
 # =========================
 # Install stack with retry (fixes "first run partial, second run completes")
 # =========================
+# Run the exact install APT is about to perform, but simulated, and refuse
+# to continue if the result is destructive. This is the gate the README has
+# always described; until now `convert` went straight from `apt-get update`
+# to `apt-get -y install` with nothing between them.
+#
+# Runs against the live APT configuration -- Mint sources and pinning are
+# already written by this point -- so the simulation reflects what the real
+# install would actually do, not an approximation of it.
+simulate_and_gate() {
+  local meta="$1"
+  local sim_out="${LOG_DIR}/simulate-$(date +%Y%m%d-%H%M%S).txt"
+  local -a pkgs=()
+  mapfile -t pkgs < <(mint_stack_packages "$meta")
+
+  info "Simulating the Mint stack install before touching anything..."
+
+  local rc=0
+  # shellcheck disable=SC2046
+  DEBIAN_FRONTEND=noninteractive apt-get $(apt_opts_common) -s install "${pkgs[@]}" \
+    >"$sim_out" 2>&1 || rc=$?
+
+  if [[ $rc -ne 0 ]]; then
+    cat "$sim_out" >&2 || true
+    die "APT could not resolve the Mint stack (exit ${rc}). Nothing has been installed. Full output: ${sim_out}"
+  fi
+
+  # `Remv <name> [version]` is what apt-get -s prints for each removal.
+  local -a removals=()
+  mapfile -t removals < <(awk '$1=="Remv"{print $2}' "$sim_out" | sort -u)
+  local count=${#removals[@]}
+
+  # Critical packages first: no threshold makes these acceptable.
+  local -a hits=()
+  local crit r
+  for crit in "${CRITICAL_PACKAGES[@]}"; do
+    for r in "${removals[@]}"; do
+      [[ "$r" == "$crit" ]] && hits+=("$r")
+    done
+  done
+
+  if (( ${#hits[@]} > 0 )); then
+    warn "APT wants to remove packages this system cannot survive without:"
+    printf '  %s\n' "${hits[@]}" >&2
+    die "Refusing to continue. Nothing has been installed. Full simulation: ${sim_out}"
+  fi
+
+  if (( count > MAX_REMOVALS )); then
+    warn "APT wants to remove ${count} packages (limit ${MAX_REMOVALS}):"
+    printf '  %s\n' "${removals[@]}" | head -n 30 >&2
+    (( count > 30 )) && echo "  ... and $((count - 30)) more" >&2
+    die "Refusing to continue. Raise --max-removals if this is genuinely expected. Full simulation: ${sim_out}"
+  fi
+
+  if (( count > 0 )); then
+    warn "Simulation removes ${count} package(s), within the limit of ${MAX_REMOVALS}:"
+    printf '  %s\n' "${removals[@]}" >&2
+  else
+    ok "Simulation removes nothing."
+  fi
+
+  ok "Simulation passed. Full output: ${sim_out}"
+}
+
+# The one place the Mint stack is listed. The simulation gate and the real
+# install both read it, so they cannot drift apart and have the gate vouch
+# for a different set of packages than the one that gets installed.
+mint_stack_packages() {
+  local meta="$1"
+  printf '%s\n' \
+    "$meta" \
+    mint-meta-core \
+    mintsystem \
+    mintupdate \
+    mintsources \
+    mint-meta-codecs
+}
+
 install_mint_stack_with_retry() {
   local meta="$1"
   shift || true
@@ -776,14 +876,8 @@ install_mint_stack_with_retry() {
   # Ensure DM choice is preseeded BEFORE meta install (lightdm often pulled as dependency)
   preseed_lightdm_default_display_manager
 
-  local -a pkgs=(
-    "$meta"
-    mint-meta-core
-    mintsystem
-    mintupdate
-    mintsources
-    mint-meta-codecs
-  )
+  local -a pkgs=()
+  mapfile -t pkgs < <(mint_stack_packages "$meta")
 
   apply_mintupdate_icon_diversion
 
@@ -1002,6 +1096,7 @@ convert() {
     xfce) meta="mint-meta-xfce" ;;
   esac
 
+  simulate_and_gate "$meta"
   install_mint_stack_with_retry "$meta"
 
   if [[ "$PRESERVE_SNAP" == "yes" ]]; then
@@ -1049,6 +1144,9 @@ parse_args_any_order() {
       --mint-mirror) MINT_MIRROR="${2:-}"; shift 2;;
       --keep-ppas) KEEP_PPAS="yes"; shift 1;;
       --preserve-snap) PRESERVE_SNAP="yes"; shift 1;;
+      --max-removals)
+        [[ "${2:-}" =~ ^[0-9]+$ ]] || die "--max-removals requires a number, got '${2:-}'"
+        MAX_REMOVALS="${2}"; shift 2;;
       --with-recommends) WITH_RECOMMENDS="yes"; shift 1;;
       --yes) ASSUME_YES="yes"; shift 1;;
       --i-accept-the-risk) I_ACCEPT_RISK="yes"; shift 1;;
