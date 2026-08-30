@@ -392,7 +392,7 @@ If this is a corporate-managed device:
 
 ## License
 
-Copyright (C) 2026 LINUXexpert.org
+Copyright (C) 2026 Coffey Labs
 
 This project is licensed under the **GNU General Public License v3.0**.
 See the `LICENSE` file or the header in `ubuntu-to-mint-convert-v3.sh`.
