@@ -75,7 +75,7 @@ working replacement session leaves you with neither — see
 ### 1) Clone and run doctor checks
 
 ```bash
-git clone https://github.com/Coffey-Labs/ubuntu2mint.git
+git clone https://git.coffeylabs.org/coffey-labs/ubuntu2mint.git
 cd ubuntu2mint
 sudo bash ubuntu-to-mint-convert-v3.sh doctor
 ````
