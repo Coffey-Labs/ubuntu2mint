@@ -1,5 +1,9 @@
 # ubuntu2mint
 
+> [!NOTE]
+> Development happens on [git.coffeylabs.org/coffey-labs/ubuntu2mint](https://git.coffeylabs.org/coffey-labs/ubuntu2mint); the copy on GitHub is a read-only mirror.
+> Report issues at **[git.coffeylabs.org/coffey-labs/ubuntu2mint/issues](https://git.coffeylabs.org/coffey-labs/ubuntu2mint/issues)**, and join discussions at **[community.coffeylabs.org](https://community.coffeylabs.org)**.
+
 High-risk, best-effort **in-place conversion** script that keeps **Ubuntu as the base OS** while adding **Linux Mint repositories + Mint desktop/tooling** to approximate a Linux Mint system **without a full reinstall**.
 
 This project is intended for experienced Linux admins who understand APT, repo pinning, display managers, and rollback strategies.
